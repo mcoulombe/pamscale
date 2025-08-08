@@ -102,20 +102,10 @@ func (p *Proxy) Initialize(ctx context.Context) error {
 	p.lastTags = p.getTagsFromNode(whoIs.Node)
 	p.lastReadonlyRole = p.checkReadonlyUserTag(ctx)
 
-	logger.Info("Proxy initialized",
-		zap.String("user", p.userLogin),
-		zap.String("node", status.Self.DNSName),
-		zap.String("backend_state", status.BackendState),
-		zap.Any("cap", whoIs.Node.CapMap),
-		zap.Any("tags", whoIs.Node.Tags),
-	)
-
 	return nil
 }
 
 func (p *Proxy) Run(ctx context.Context) error {
-	logger.Info("Starting PAMscale - monitoring node tag changes every 2 seconds")
-
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -298,7 +288,7 @@ func main() {
 
 	initLogger(cli.Debug, cli.Verbose)
 	defer logger.Sync()
-	logger.Info("Starting PAMscale",
+	logger.Info("PAMscale online",
 		zap.Bool("verbose", cli.Verbose),
 		zap.Bool("debug", cli.Debug),
 	)
