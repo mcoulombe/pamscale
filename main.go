@@ -202,20 +202,17 @@ func (p *Proxy) checkTagChanges(ctx context.Context) error {
 
 // checkReadonlyUserTag checks if the "tag:db-readonly-user" tag is present in the node tags
 func (p *Proxy) checkReadonlyUserTag(ctx context.Context) bool {
-	status, err := p.tsClient.Status(ctx)
+	whoIs, err := p.tsClient.WhoIs(ctx, "100.64.172.23")
 	if err != nil {
-		logger.Error("Failed to get Tailscale status", zap.Error(err))
+		logger.Error("Failed to get WhoIs info", zap.Error(err))
 		return false
 	}
 
-	// Check if the tag:db-readonly-user tag is present
-	tags := status.Self.Tags
-	if tags != nil {
-		for i := 0; i < tags.Len(); i++ {
-			tag := tags.At(i)
-			if tag == "tag:db-readonly-user" {
-				return true
-			}
+	// Get tags from the node and check if tag:db-readonly-user is present
+	tags := p.getTagsFromNode(whoIs.Node)
+	for _, tag := range tags {
+		if tag == "tag:db-readonly-user" {
+			return true
 		}
 	}
 
