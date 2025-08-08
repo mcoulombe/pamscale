@@ -98,9 +98,9 @@ func (p *Proxy) Initialize(ctx context.Context) error {
 	user := status.User[status.Self.UserID]
 	p.userLogin = user.LoginName
 
-	// Store initial CapMap and readonly role state for comparison
+	// Store initial CapMap and readonly tag state for comparison
 	p.lastCapMap = whoIs.Node.CapMap
-	p.lastReadonlyRole = p.checkReadonlyUserRole(whoIs.Node.CapMap)
+	p.lastReadonlyRole = p.checkReadonlyUserTag(ctx)
 
 	logger.Info("Proxy initialized",
 		zap.String("user", p.userLogin),
@@ -161,8 +161,8 @@ func (p *Proxy) checkCapMapChanges(ctx context.Context) error {
 			}
 		}
 
-		// Check if readonly_user role state has changed
-		currentReadonlyRole := p.checkReadonlyUserRole(currentCapMap)
+		// Check if readonly_user tag state has changed
+		currentReadonlyRole := p.checkReadonlyUserTag(ctx)
 		if currentReadonlyRole != p.lastReadonlyRole {
 			p.onReadonlyUserRoleChanged(currentReadonlyRole)
 			p.lastReadonlyRole = currentReadonlyRole
@@ -175,61 +175,20 @@ func (p *Proxy) checkCapMapChanges(ctx context.Context) error {
 	return nil
 }
 
-// checkReadonlyUserRole checks if the readonly_user role is present in the PAMscale capability
-func (p *Proxy) checkReadonlyUserRole(capMap interface{}) bool {
-	// Marshal and unmarshal to convert NodeCapMap to map[string]interface{}
-	capMapJSON, err := json.Marshal(capMap)
+// checkReadonlyUserTag checks if the "tag:db-readonly-user" tag is present in the node tags
+func (p *Proxy) checkReadonlyUserTag(ctx context.Context) bool {
+	status, err := p.tsClient.Status(ctx)
 	if err != nil {
+		logger.Error("Failed to get Tailscale status", zap.Error(err))
 		return false
 	}
 
-	var capMapData map[string]interface{}
-	if err := json.Unmarshal(capMapJSON, &capMapData); err != nil {
-		return false
-	}
-
-	// Look for the PAMscale capability
-	pamscaleCap, exists := capMapData["hackweek.com/cap/PAMscale"]
-	if !exists {
-		return false
-	}
-
-	// Parse the capability as an array
-	pamscaleArray, ok := pamscaleCap.([]interface{})
-	if !ok {
-		return false
-	}
-
-	// Check each target in the capability
-	for _, item := range pamscaleArray {
-		target, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		targets, exists := target["targets"]
-		if !exists {
-			continue
-		}
-
-		targetsMap, ok := targets.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		roles, exists := targetsMap["roles"]
-		if !exists {
-			continue
-		}
-
-		rolesArray, ok := roles.([]interface{})
-		if !ok {
-			continue
-		}
-
-		// Check if "readonly_user" is in the roles array
-		for _, role := range rolesArray {
-			if roleStr, ok := role.(string); ok && roleStr == "readonly_user" {
+	// Check if the tag:db-readonly-user tag is present
+	tags := status.Self.Tags
+	if tags != nil {
+		for i := 0; i < tags.Len(); i++ {
+			tag := tags.At(i)
+			if tag == "tag:db-readonly-user" {
 				return true
 			}
 		}
