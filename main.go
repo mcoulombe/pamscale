@@ -169,7 +169,7 @@ func (p *Proxy) checkTagChanges(ctx context.Context) error {
 	// Compare with previous tags using deep equality
 	if !reflect.DeepEqual(p.lastTags, currentTags) {
 		// Tags have changed, display the new tags
-		tagsJSON, err := json.MarshalIndent(currentTags, "", "  ")
+		_, err := json.MarshalIndent(currentTags, "", "  ")
 		if err != nil {
 			logger.Error("Failed to marshal tags", zap.Error(err))
 		}
