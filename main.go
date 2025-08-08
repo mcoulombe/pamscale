@@ -19,6 +19,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/term"
 	"tailscale.com/client/local"
+	"tailscale.com/ipn/ipnstate"
 )
 
 type CLI struct {
@@ -34,7 +35,7 @@ type Proxy struct {
 	httpClient       *http.Client
 	userLogin        string
 	sessionID        string
-	lastCapMap       interface{}
+	lastTags         []string
 	lastReadonlyRole bool
 }
 
@@ -98,8 +99,8 @@ func (p *Proxy) Initialize(ctx context.Context) error {
 	user := status.User[status.Self.UserID]
 	p.userLogin = user.LoginName
 
-	// Store initial CapMap and readonly tag state for comparison
-	p.lastCapMap = whoIs.Node.CapMap
+	// Store initial tags and readonly tag state for comparison
+	p.lastTags = p.getTagsAsSlice(status)
 	p.lastReadonlyRole = p.checkReadonlyUserTag(ctx)
 
 	logger.Info("Proxy initialized",
@@ -114,7 +115,7 @@ func (p *Proxy) Initialize(ctx context.Context) error {
 }
 
 func (p *Proxy) Run(ctx context.Context) error {
-	logger.Info("Starting PAMscale - monitoring CapMap changes every 2 seconds")
+	logger.Info("Starting PAMscale - monitoring node tag changes every 2 seconds")
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -124,41 +125,40 @@ func (p *Proxy) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := p.checkCapMapChanges(ctx); err != nil {
-				logger.Error("Failed to check CapMap changes", zap.Error(err))
+			if err := p.checkTagChanges(ctx); err != nil {
+				logger.Error("Failed to check tag changes", zap.Error(err))
 			}
 		}
 	}
 }
 
-func (p *Proxy) checkCapMapChanges(ctx context.Context) error {
-	whoIs, err := p.tsClient.WhoIs(ctx, "100.64.172.23")
+// getTagsAsSlice converts Tailscale tags to a string slice for comparison
+func (p *Proxy) getTagsAsSlice(status *ipnstate.Status) []string {
+	var tags []string
+	if status.Self.Tags != nil {
+		for i := 0; i < status.Self.Tags.Len(); i++ {
+			tags = append(tags, status.Self.Tags.At(i))
+		}
+	}
+	return tags
+}
+
+func (p *Proxy) checkTagChanges(ctx context.Context) error {
+	status, err := p.tsClient.Status(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get WhoIs info: %w", err)
+		return fmt.Errorf("failed to get Tailscale status: %w", err)
 	}
 
-	currentCapMap := whoIs.Node.CapMap
+	currentTags := p.getTagsAsSlice(status)
 
-	// Compare with previous CapMap using deep equality
-	if !reflect.DeepEqual(p.lastCapMap, currentCapMap) {
-		// CapMap has changed, marshal to JSON and extract PAMscale capability
-		capMapJSON, err := json.Marshal(currentCapMap)
+	// Compare with previous tags using deep equality
+	if !reflect.DeepEqual(p.lastTags, currentTags) {
+		// Tags have changed, display the new tags
+		tagsJSON, err := json.MarshalIndent(currentTags, "", "  ")
 		if err != nil {
-			logger.Error("Failed to marshal CapMap", zap.Error(err))
+			logger.Error("Failed to marshal tags", zap.Error(err))
 		} else {
-			var capMapData map[string]interface{}
-			if err := json.Unmarshal(capMapJSON, &capMapData); err != nil {
-				logger.Error("Failed to unmarshal CapMap", zap.Error(err))
-			} else {
-				if pamscaleCap, exists := capMapData["hackweek.com/cap/PAMscale"]; exists {
-					pamscaleJSON, err := json.MarshalIndent(pamscaleCap, "", "  ")
-					if err != nil {
-						logger.Error("Failed to marshal PAMscale capability", zap.Error(err))
-					} else {
-						fmt.Printf("PAMscale capability changed:\n%s\n", string(pamscaleJSON))
-					}
-				}
-			}
+			fmt.Printf("Node tags changed:\n%s\n", string(tagsJSON))
 		}
 
 		// Check if readonly_user tag state has changed
@@ -168,8 +168,8 @@ func (p *Proxy) checkCapMapChanges(ctx context.Context) error {
 			p.lastReadonlyRole = currentReadonlyRole
 		}
 
-		// Update our stored CapMap
-		p.lastCapMap = currentCapMap
+		// Update our stored tags
+		p.lastTags = currentTags
 	}
 
 	return nil
