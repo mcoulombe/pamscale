@@ -226,14 +226,13 @@ func (p *Proxy) restartPgbouncer() error {
 	if err := stopCmd.Run(); err != nil {
 		return fmt.Errorf("failed to stop pgbouncer: %w", err)
 	}
-	logger.Info("Pgbouncer stopped")
 
 	// Start pgbouncer
 	startCmd := exec.Command("sudo", "systemctl", "start", "pgbouncer")
 	if err := startCmd.Run(); err != nil {
 		return fmt.Errorf("failed to start pgbouncer: %w", err)
 	}
-	logger.Info("Pgbouncer started")
+	logger.Info("User provisioned")
 
 	return nil
 }
@@ -246,11 +245,11 @@ func (p *Proxy) updateUserList(addUser bool) error {
 	if addUser {
 		// File should contain exactly the target entry
 		content = targetEntry + "\n"
-		logger.Info("Setting pgbouncer userlist to readonly_user only")
+		logger.Info("Target '100.64.172.23' can now use the 'readonly_user' role")
 	} else {
 		// File should be empty (truncated)
 		content = ""
-		logger.Info("Truncating pgbouncer userlist")
+		logger.Info("Target '100.64.172.23' can no longer use the 'readonly_user' role")
 	}
 
 	// Write the exact content to the file
@@ -266,12 +265,10 @@ func (p *Proxy) updateUserList(addUser bool) error {
 // onReadonlyUserRoleChanged is the callback triggered when readonly_user role changes
 func (p *Proxy) onReadonlyUserRoleChanged(hasRole bool) {
 	if hasRole {
-		fmt.Println("readonly_user role added - updating pgbouncer userlist")
 		if err := p.updateUserList(true); err != nil {
 			logger.Error("Failed to add readonly_user to userlist", zap.Error(err))
 		}
 	} else {
-		fmt.Println("readonly_user role removed - updating pgbouncer userlist")
 		if err := p.updateUserList(false); err != nil {
 			logger.Error("Failed to remove readonly_user from userlist", zap.Error(err))
 		}
