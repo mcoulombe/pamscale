@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -150,12 +149,12 @@ func (p *Proxy) getTagsFromNode(node interface{}) []string {
 	if nodeValue.Kind() == reflect.Ptr {
 		nodeValue = nodeValue.Elem()
 	}
-	
+
 	tagsField := nodeValue.FieldByName("Tags")
 	if !tagsField.IsValid() {
 		return []string{}
 	}
-	
+
 	var tags []string
 	if tagsField.Kind() == reflect.Slice {
 		for i := 0; i < tagsField.Len(); i++ {
@@ -165,7 +164,7 @@ func (p *Proxy) getTagsFromNode(node interface{}) []string {
 			}
 		}
 	}
-	
+
 	return tags
 }
 
@@ -223,87 +222,48 @@ func (p *Proxy) checkReadonlyUserTag(ctx context.Context) bool {
 	return false
 }
 
-// readUserList reads the pgbouncer userlist file and returns its lines
-func (p *Proxy) readUserList() ([]string, error) {
-	content, err := ioutil.ReadFile("/etc/pgbouncer/userlist.txt")
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil // Return empty list if file doesn't exist
-		}
-		return nil, fmt.Errorf("failed to read userlist.txt: %w", err)
+// restartPgbouncer stops and starts pgbouncer using systemctl
+func (p *Proxy) restartPgbouncer() error {
+	// Stop pgbouncer
+	stopCmd := exec.Command("sudo", "systemctl", "stop", "pgbouncer")
+	if err := stopCmd.Run(); err != nil {
+		return fmt.Errorf("failed to stop pgbouncer: %w", err)
 	}
-	
-	lines := strings.Split(string(content), "\n")
-	// Filter out empty lines
-	var result []string
-	for _, line := range lines {
-		if strings.TrimSpace(line) != "" {
-			result = append(result, line)
-		}
-	}
-	
-	return result, nil
-}
+	logger.Info("Pgbouncer stopped")
 
-// writeUserList writes the updated userlist back to the file
-func (p *Proxy) writeUserList(lines []string) error {
-	content := strings.Join(lines, "\n")
-	if len(lines) > 0 {
-		content += "\n" // Add trailing newline if there are lines
+	// Start pgbouncer
+	startCmd := exec.Command("sudo", "systemctl", "start", "pgbouncer")
+	if err := startCmd.Run(); err != nil {
+		return fmt.Errorf("failed to start pgbouncer: %w", err)
 	}
-	
-	err := ioutil.WriteFile("/etc/pgbouncer/userlist.txt", []byte(content), 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write userlist.txt: %w", err)
-	}
-	
-	return nil
-}
+	logger.Info("Pgbouncer started")
 
-// reloadPgbouncer sends a SIGHUP to pgbouncer to reload configuration
-func (p *Proxy) reloadPgbouncer() error {
-	cmd := exec.Command("pkill", "-HUP", "pgbouncer")
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to reload pgbouncer: %w", err)
-	}
-	
-	logger.Info("Pgbouncer configuration reloaded")
 	return nil
 }
 
 // updateUserList manages the readonly_user entry in the userlist
 func (p *Proxy) updateUserList(addUser bool) error {
-	lines, err := p.readUserList()
-	if err != nil {
-		return err
-	}
-	
 	const targetEntry = `"readonly_user" "foobar"`
-	
-	// Remove any existing readonly_user entry
-	var filteredLines []string
-	for _, line := range lines {
-		if !strings.Contains(line, "readonly_user") {
-			filteredLines = append(filteredLines, line)
-		}
-	}
-	
-	// Add the entry if requested
+
+	var content string
 	if addUser {
-		filteredLines = append(filteredLines, targetEntry)
-		logger.Info("Added readonly_user to pgbouncer userlist")
+		// File should contain exactly the target entry
+		content = targetEntry + "\n"
+		logger.Info("Setting pgbouncer userlist to readonly_user only")
 	} else {
-		logger.Info("Removed readonly_user from pgbouncer userlist")
+		// File should be empty (truncated)
+		content = ""
+		logger.Info("Truncating pgbouncer userlist")
 	}
-	
-	// Write the updated userlist
-	if err := p.writeUserList(filteredLines); err != nil {
-		return err
+
+	// Write the exact content to the file
+	err := ioutil.WriteFile("/etc/pgbouncer/userlist.txt", []byte(content), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write userlist.txt: %w", err)
 	}
-	
-	// Reload pgbouncer configuration
-	return p.reloadPgbouncer()
+
+	// Restart pgbouncer using systemctl
+	return p.restartPgbouncer()
 }
 
 // onReadonlyUserRoleChanged is the callback triggered when readonly_user role changes
@@ -314,7 +274,7 @@ func (p *Proxy) onReadonlyUserRoleChanged(hasRole bool) {
 			logger.Error("Failed to add readonly_user to userlist", zap.Error(err))
 		}
 	} else {
-		fmt.Println("readonly_user role removed - updating pgbouncer userlist") 
+		fmt.Println("readonly_user role removed - updating pgbouncer userlist")
 		if err := p.updateUserList(false); err != nil {
 			logger.Error("Failed to remove readonly_user from userlist", zap.Error(err))
 		}
