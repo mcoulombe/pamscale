@@ -100,7 +100,7 @@ func (p *Proxy) Initialize(ctx context.Context) error {
 	p.userLogin = user.LoginName
 
 	// Store initial tags and readonly tag state for comparison
-	p.lastTags = p.getTagsAsSlice(status)
+	p.lastTags = p.getTagsFromNode(whoIs.Node)
 	p.lastReadonlyRole = p.checkReadonlyUserTag(ctx)
 
 	logger.Info("Proxy initialized",
@@ -143,13 +143,39 @@ func (p *Proxy) getTagsAsSlice(status *ipnstate.Status) []string {
 	return tags
 }
 
+// getTagsFromNode converts node tags to a string slice for comparison
+func (p *Proxy) getTagsFromNode(node interface{}) []string {
+	// Use reflection to access the Tags field
+	nodeValue := reflect.ValueOf(node)
+	if nodeValue.Kind() == reflect.Ptr {
+		nodeValue = nodeValue.Elem()
+	}
+	
+	tagsField := nodeValue.FieldByName("Tags")
+	if !tagsField.IsValid() {
+		return []string{}
+	}
+	
+	var tags []string
+	if tagsField.Kind() == reflect.Slice {
+		for i := 0; i < tagsField.Len(); i++ {
+			tag := tagsField.Index(i)
+			if tag.Kind() == reflect.String {
+				tags = append(tags, tag.String())
+			}
+		}
+	}
+	
+	return tags
+}
+
 func (p *Proxy) checkTagChanges(ctx context.Context) error {
-	status, err := p.tsClient.Status(ctx)
+	whoIs, err := p.tsClient.WhoIs(ctx, "100.64.172.23")
 	if err != nil {
-		return fmt.Errorf("failed to get Tailscale status: %w", err)
+		return fmt.Errorf("failed to get WhoIs info: %w", err)
 	}
 
-	currentTags := p.getTagsAsSlice(status)
+	currentTags := p.getTagsFromNode(whoIs.Node)
 
 	// Compare with previous tags using deep equality
 	if !reflect.DeepEqual(p.lastTags, currentTags) {
