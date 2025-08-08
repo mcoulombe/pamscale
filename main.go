@@ -172,8 +172,6 @@ func (p *Proxy) checkTagChanges(ctx context.Context) error {
 		tagsJSON, err := json.MarshalIndent(currentTags, "", "  ")
 		if err != nil {
 			logger.Error("Failed to marshal tags", zap.Error(err))
-		} else {
-			fmt.Printf("Node tags changed:\n%s\n", string(tagsJSON))
 		}
 
 		// Check if readonly_user tag state has changed
