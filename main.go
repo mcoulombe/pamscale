@@ -222,7 +222,6 @@ func (p *Proxy) restartPgbouncer() error {
 	if err := startCmd.Run(); err != nil {
 		return fmt.Errorf("failed to start pgbouncer: %w", err)
 	}
-	logger.Info("User provisioned")
 
 	return nil
 }
@@ -235,11 +234,11 @@ func (p *Proxy) updateUserList(addUser bool) error {
 	if addUser {
 		// File should contain exactly the target entry
 		content = targetEntry + "\n"
-		logger.Info("Target '100.64.172.23' can now use the 'readonly_user' role")
+		logger.Info("target '100.64.172.23' can now use the 'readonly_user' role")
 	} else {
 		// File should be empty (truncated)
 		content = ""
-		logger.Info("Target '100.64.172.23' can no longer use the 'readonly_user' role")
+		logger.Info("target '100.64.172.23' can no longer use the 'readonly_user' role")
 	}
 
 	// Write the exact content to the file
