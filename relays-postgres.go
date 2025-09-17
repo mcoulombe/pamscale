@@ -190,14 +190,21 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 		return err
 	}
 
+	// Create audit file for this session
+	auditFile, err := r.createAuditFile(ctx, tsConn, r.dbHost, r.sessionDatabase, r.sessionUser)
+	if err != nil {
+		r.relayMetrics.errors.Add("audit-file-create-failed", 1)
+		return fmt.Errorf("failed to create audit file: %v", err)
+	}
+	defer auditFile.Close()
+
 	// Client has access and relay impersonated a database user, just relay the traffic as long as the connection is alive
 	r.relayMetrics.activeSessions.Add(1)
 	defer r.relayMetrics.activeSessions.Add(-1)
 
 	errc := make(chan error, 1)
 	go func() {
-		// TODO add audit here
-		_, err := io.Copy(dbClient, clientConn)
+		_, err := auditCopy(auditFile, dbClient, clientConn)
 		errc <- err
 	}()
 	go func() {
@@ -210,15 +217,15 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 	return nil
 }
 
-func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, error) {
+// getClientIdentity extracts user and machine information from Tailscale WhoIs
+func (r *postgresRelay) getClientIdentity(ctx context.Context, conn net.Conn) (string, string, []tailcfg.RawMessage, error) {
 	whois, err := r.tsClient.WhoIs(ctx, conn.RemoteAddr().String())
 	if err != nil {
 		r.relayMetrics.errors.Add("whois-failed", 1)
-		return false, fmt.Errorf("unexpected error getting client identity: %v", err)
+		return "", "", nil, fmt.Errorf("unexpected error getting client identity: %v", err)
 	}
 
-	// Check if we are dealing with a valid Tailscale identity
-	user, machine := "", ""
+	machine := ""
 	if whois.Node != nil {
 		if whois.Node.Hostinfo.ShareeNode() {
 			machine = "external-device"
@@ -226,6 +233,8 @@ func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, err
 			machine = strings.TrimSuffix(whois.Node.Name, ".")
 		}
 	}
+
+	user := ""
 	if whois.UserProfile != nil {
 		user = whois.UserProfile.LoginName
 		if user == "tagged-devices" && whois.Node != nil {
@@ -234,20 +243,28 @@ func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, err
 	}
 	if user == "" || machine == "" {
 		r.relayMetrics.errors.Add("no-ts-identity", 1)
-		return false, fmt.Errorf("couldn't identify source user and machine (user %q, machine %q)", user, machine)
+		return "", "", nil, fmt.Errorf("couldn't identify source user and machine (user %q, machine %q)", user, machine)
+	}
+
+	return user, machine, whois.CapMap[tailcfg.PeerCapability(tsDBRelayCapability)], nil
+}
+
+func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, error) {
+	user, machine, capabilities, err := r.getClientIdentity(ctx, conn)
+	if err != nil {
+		return false, err
 	}
 
 	// Check if the client has access to the requested user and database through Tailscale capabilities
-	capValues, hasCapability := whois.CapMap[tailcfg.PeerCapability(tsDBRelayCapability)]
-	if !hasCapability {
+	if capabilities == nil {
 		r.relayMetrics.errors.Add("no-ts-db-relay-capability", 1)
 		return false, fmt.Errorf("user %q on machine %q does not have ts-db-relay capability", user, machine)
 	}
 
-	for _, capValue := range capValues {
+	for _, capability := range capabilities {
 		var grantCap grantCapSchema
 
-		if err := json.Unmarshal([]byte(capValue), &grantCap); err != nil {
+		if err := json.Unmarshal([]byte(capability), &grantCap); err != nil {
 			r.relayMetrics.errors.Add("capability-parse-error", 1)
 			return false, fmt.Errorf("failed to parse capability value: %v", err)
 		}
@@ -288,7 +305,7 @@ func (r *postgresRelay) seedCredentials(_ context.Context) error {
 
 	if _, err := os.Stat(credFilePath); os.IsNotExist(err) {
 		r.relayMetrics.errors.Add("credential-file-not-found", 1)
-		return fmt.Errorf("credential file not found", r.dbHost, r.sessionDatabase, r.sessionUser)
+		return fmt.Errorf("credential file %s not found", credFilePath)
 	}
 
 	passwordBytes, err := os.ReadFile(credFilePath)
@@ -621,4 +638,69 @@ func md5Response(password, username string, salt [4]byte) string {
 	h2inp := append([]byte(h1hex), salt[:]...)
 	h2 := md5.Sum(h2inp)
 	return "md5" + hex.EncodeToString(h2[:])
+}
+
+func (r *postgresRelay) createAuditFile(ctx context.Context, conn net.Conn, dbHost, database, dbUser string) (*os.File, error) {
+	// Get client identity for audit file naming
+	user, machine, _, err := r.getClientIdentity(ctx, conn)
+	if err != nil {
+		r.relayMetrics.errors.Add("audit-identity-failed", 1)
+		return nil, fmt.Errorf("failed to get client identity for audit: %v", err)
+	}
+
+	// Create unique audit file for this session
+	// Format: {timestamp}-{user}-{machine}-{dbHost}-{database}-{dbUser}.log
+	timestamp := time.Now().Format("20060102-150405")
+	auditFilename := fmt.Sprintf("%s-%s-%s-%s-%s-%s.log",
+		timestamp, user, machine, dbHost, database, dbUser)
+	auditPath := filepath.Join("/var/lib/audits", auditFilename)
+
+	auditFile, err := os.Create(auditPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create audit file: %v", err)
+	}
+
+	// Write session header to audit file
+	fmt.Fprintf(auditFile, "SESSION START: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(auditFile, "Client: %s@%s\n", user, machine)
+	fmt.Fprintf(auditFile, "Database: postgres://%s/%s\n", dbHost, database)
+	fmt.Fprintf(auditFile, "DB User: %s\n", dbUser)
+	fmt.Fprintf(auditFile, "--- DATA START ---\n")
+
+	return auditFile, nil
+}
+
+func auditCopy(auditFile *os.File, dst io.Writer, src io.Reader) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+
+	for {
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			fmt.Fprintf(auditFile, "[%s]: %d bytes\n", time.Now().Format("15:04:05.000"), nr)
+			fmt.Fprintf(auditFile, "%s\n", hex.Dump(buf[:nr]))
+
+			nw, ew := dst.Write(buf[:nr])
+			if nw < 0 || nr < nw {
+				nw = 0
+				if ew == nil {
+					ew = fmt.Errorf("invalid write result")
+				}
+			}
+			written += int64(nw)
+			if ew != nil {
+				return written, ew
+			}
+			if nr != nw {
+				return written, io.ErrShortWrite
+			}
+		}
+		if er != nil {
+			if er != io.EOF {
+				return written, er
+			}
+			break
+		}
+	}
+	return written, nil
 }

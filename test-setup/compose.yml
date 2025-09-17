@@ -15,6 +15,7 @@ services:
       - ../data/ts-dummy-state:/var/lib/ts-dummy-state
       - ../data/certs:/var/lib/certs
       - ../data/creds:/var/lib/creds
+      - ../data/audits:/var/lib/audits
       - ../cmd/ts-db-relay.exe:/usr/local/bin/ts-db-relay
     cap_add:
       - NET_ADMIN
