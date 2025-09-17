@@ -8,6 +8,8 @@ import (
 	"tailscale.com/metrics"
 )
 
+const tsDBRelayCapability = "tailscale.test/cap/ts-db-relay"
+
 // Relay is used to proxy connections from Tailscale clients to a database server.
 //
 // Uses the client’s Tailscale identity to authorize access and map it

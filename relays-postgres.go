@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"expvar"
 	"fmt"
 	"io"
@@ -19,17 +20,31 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"tailscale.com/client/local"
 	"tailscale.com/metrics"
+	"tailscale.com/tailcfg"
 )
 
 var (
 	sslStart       = [8]byte{0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f}
 	plaintextStart = [8]byte{0, 0, 0, 86, 0, 3, 0, 0}
 )
+
+type grantCapSchema struct {
+	Postgres postgresCapSchema `json:"postgres"`
+}
+type postgresCapSchema struct {
+	Impersonate impersonateSchema `json:"impersonate"`
+}
+
+type impersonateSchema struct {
+	Databases []string `json:"databases"`
+	Users     []string `json:"users"`
+}
 
 var _ Relay = (*postgresRelay)(nil)
 
@@ -202,6 +217,7 @@ func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, err
 		return false, fmt.Errorf("unexpected error getting client identity: %v", err)
 	}
 
+	// Check if we are dealing with a valid Tailscale identity
 	user, machine := "", ""
 	if whois.Node != nil {
 		if whois.Node.Hostinfo.ShareeNode() {
@@ -221,14 +237,71 @@ func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, err
 		return false, fmt.Errorf("couldn't identify source user and machine (user %q, machine %q)", user, machine)
 	}
 
-	// TODO evaluate user and database against grants
+	// Check if the client has access to the requested user and database through Tailscale capabilities
+	capValues, hasCapability := whois.CapMap[tailcfg.PeerCapability(tsDBRelayCapability)]
+	if !hasCapability {
+		r.relayMetrics.errors.Add("no-ts-db-relay-capability", 1)
+		return false, fmt.Errorf("user %q on machine %q does not have ts-db-relay capability", user, machine)
+	}
 
-	return true, nil
+	for _, capValue := range capValues {
+		var grantCap grantCapSchema
+
+		if err := json.Unmarshal([]byte(capValue), &grantCap); err != nil {
+			r.relayMetrics.errors.Add("capability-parse-error", 1)
+			return false, fmt.Errorf("failed to parse capability value: %v", err)
+		}
+
+		userAllowed := false
+		for _, allowedUser := range grantCap.Postgres.Impersonate.Users {
+			if allowedUser == r.sessionUser {
+				userAllowed = true
+				break
+			}
+		}
+		if !userAllowed {
+			continue
+		}
+
+		databaseAllowed := false
+		for _, allowedDB := range grantCap.Postgres.Impersonate.Databases {
+			if allowedDB == r.sessionDatabase {
+				databaseAllowed = true
+				break
+			}
+		}
+		if !databaseAllowed {
+			continue
+		}
+
+		return true, nil
+	}
+
+	r.relayMetrics.errors.Add("not-allowed-to-impersonate", 1)
+	return false, fmt.Errorf("user %q is not allowed to access database %q as user %q", user, r.sessionDatabase, r.sessionUser)
 }
 
-func (r *postgresRelay) seedCredentials(ctx context.Context) error {
-	// TODO read from a secure vault, password manager, or generate on the fly
-	r.sessionPassword = "Test4Sk8board"
+func (r *postgresRelay) seedCredentials(_ context.Context) error {
+	// TODO unsafe POC implementation, should generate dynamic credentials or connect to external secrets manager
+	filename := fmt.Sprintf("postgres-%s-%s-%s.txt", r.dbHost, r.sessionDatabase, r.sessionUser)
+	credFilePath := filepath.Join("/var/lib/creds", filename)
+
+	if _, err := os.Stat(credFilePath); os.IsNotExist(err) {
+		r.relayMetrics.errors.Add("credential-file-not-found", 1)
+		return fmt.Errorf("credential file not found", r.dbHost, r.sessionDatabase, r.sessionUser)
+	}
+
+	passwordBytes, err := os.ReadFile(credFilePath)
+	if err != nil {
+		r.relayMetrics.errors.Add("credential-file-read-error", 1)
+		return fmt.Errorf("failed to read credential file %s: %v", credFilePath, err)
+	}
+	if len(passwordBytes) == 0 {
+		r.relayMetrics.errors.Add("credential-file-empty", 1)
+		return fmt.Errorf("credential file %s is empty", credFilePath)
+	}
+
+	r.sessionPassword = string(passwordBytes)
 
 	return nil
 }
