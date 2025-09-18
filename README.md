@@ -46,7 +46,7 @@ Note: setup from scratch in a new environment not tested yet. These steps likely
    
        "grants": [
            {
-               "src": ["insecure@example.com"],
+               "src": ["*"],
                "dst": ["tag:db-postgres"],
                "ip":  ["tcp:5432", "tcp:80"],
    
