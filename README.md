@@ -38,33 +38,33 @@ Note: setup from scratch in a new environment not tested yet. These steps likely
     docker compose -f test-setup/compose.yml up --build
    ```
 
-   1. Configure the ts-db-relay capability in your tailnet policy file $TS_SERVER/admin/acls/file
+1. Configure the ts-db-relay capability in your tailnet policy file ($TS_SERVER/admin/acls/file)
 
-      ```json
-       {
-          "tagOwners": {"tag:db-postgres": ["autogroup:admin"]},
+   ```json
+    {
+       "tagOwners": {"tag:db-postgres": ["autogroup:admin"]},
    
-          "grants": [
-              {
-                  "src": ["insecure@example.com"],
-                  "dst": ["tag:db-postgres"],
-                  "ip":  ["tcp:5432", "tcp:80"],
+       "grants": [
+           {
+               "src": ["insecure@example.com"],
+               "dst": ["tag:db-postgres"],
+               "ip":  ["tcp:5432", "tcp:80"],
    
-                  "app": {
-                      "tailscale.test/cap/ts-db-relay": [
-                          {
-                              "postgres": {
-                                  "impersonate": {
-                                      "databases": ["testdb"],
-                                      "users":     ["test"],
-                                  },
-                              },
-                          },
-                      ],
-                  },
-              },
-          ],
-       }
+               "app": {
+                   "tailscale.test/cap/ts-db-relay": [
+                       {
+                           "postgres": {
+                               "impersonate": {
+                                   "databases": ["testdb"],
+                                   "users":     ["test"],
+                               },
+                           },
+                       },
+                   ],
+               },
+           },
+       ],
+    }
    ```
    
 1. Connect to the database over Tailscale, works from anywhere without credentials
